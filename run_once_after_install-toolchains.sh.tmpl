@@ -3,26 +3,62 @@
 # from the actual installer. `set -u` catches accidental unset-var typos.
 set -euo pipefail
 
+# Dockerfile.test exists to verify the Brewfile/profile contract, not to
+# bootstrap every machine-global developer CLI. Keep that path narrow so
+# profile CI only fails on profile drift, not on unrelated tap/npm churn.
+if [[ "${DOTFILES_PROFILE_VERIFY:-0}" == "1" ]]; then
+  echo "→ Skipping optional toolchain bootstrap in profile verification mode"
+  exit 0
+fi
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Toolchains — cross-platform
 #
 # Runs AFTER the Brewfile.core install (lexically `install-brewfile` < `install-toolchains`),
-# so the static binaries this script initializes (fnm, supabase tap) are
-# already on PATH via brew.
+# so any brew-backed bootstrap helpers this script uses are already on PATH.
+#
+# Alpine/musl note: Homebrew is not available on Alpine. Brew-dependent steps
+# are skipped; Rust via rustup-init still works (Alpine ships musl targets).
+# RHEL note: Homebrew is available on RHEL (glibc), so brew steps run normally.
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Ensure brew is on PATH
+# ── OS family detection ───────────────────────────────────────────────────────
+_os_family() {
+  if [ -f /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    case "${ID:-}" in
+      alpine)                           echo "alpine"; return ;;
+      ubuntu|debian|linuxmint|pop|kali) echo "debian"; return ;;
+      rhel|centos|fedora|rocky|almalinux|ol|scientific) echo "rhel"; return ;;
+    esac
+    case "${ID_LIKE:-}" in
+      *debian*)                 echo "debian"; return ;;
+      *rhel*|*fedora*|*centos*) echo "rhel";   return ;;
+    esac
+  fi
+  echo "unknown"
+}
+OS_FAMILY="$(_os_family)"
+
+# Brew is available on everything except Alpine/musl.
+NO_BREW=false
+[[ "$OS_FAMILY" == "alpine" ]] && NO_BREW=true
+
+# Ensure brew is on PATH (skipped on Alpine where brew is not installed)
+if [[ "$NO_BREW" == "false" ]]; then
 {{- if eq .chezmoi.os "darwin" }}
-if [[ -x /opt/homebrew/bin/brew ]]; then
-  eval "$(/opt/homebrew/bin/brew shellenv)"
-elif [[ -x /usr/local/bin/brew ]]; then
-  eval "$(/usr/local/bin/brew shellenv)"
-fi
+  if [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  elif [[ -x /usr/local/bin/brew ]]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+  fi
 {{- else }}
-if [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
-  eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-fi
+  if [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
+    eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+  fi
 {{- end }}
+fi
 
 # Rust: install via official rustup-init script. We deliberately don't use
 # `brew install rustup` because Linuxbrew ships only the `rustup` binary
@@ -59,10 +95,4 @@ if command -v npm >/dev/null 2>&1; then
       npm install -g "$pkg"
     fi
   done
-fi
-
-# Supabase CLI via brew tap (not in core Brewfile because it needs a tap)
-if ! command -v supabase >/dev/null 2>&1 && command -v brew >/dev/null 2>&1; then
-  echo "→ Installing Supabase CLI..."
-  brew install supabase/tap/supabase
 fi

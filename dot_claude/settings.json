@@ -5,10 +5,8 @@
   "permissions": {
     "defaultMode": "default"
   },
-  "statusLine": {
-    "type": "command",
-    "command": "bash /Users/jth/.claude/statusline-command.sh"
-  },
+  "theme": "dark",
+  "tui": "fullscreen",
   "enabledPlugins": {
     "coderabbit@claude-plugins-official": true,
     "claude-md-management@claude-plugins-official": true,
@@ -21,12 +19,6 @@
       "source": {
         "source": "github",
         "repo": "scalekit-inc/claude-code-authstack"
-      }
-    },
-    "mem0-plugins": {
-      "source": {
-        "source": "github",
-        "repo": "mem0ai/mem0"
       }
     }
   },

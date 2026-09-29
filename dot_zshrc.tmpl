@@ -144,7 +144,14 @@ bindkey '^H' backward-kill-word
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # Node (fnm)
-command -v fnm &>/dev/null && eval "$(fnm env --use-on-cd)"
+# --version-file-strategy recursive: walk up to the home-level ~/.node-version
+# (shipped as dot_node-version = lts/*) so fnm always resolves a default and
+# never errors "Can't find version …" on a fresh deploy or a dir without its
+# own .node-version. Project-local .node-version files still win (nearest match).
+if command -v fnm &>/dev/null; then
+    export FNM_LOGLEVEL=error
+    eval "$(fnm env --use-on-cd --version-file-strategy recursive 2>/dev/null)"
+fi
 
 # Go
 export PATH="$HOME/go/bin:$PATH"
@@ -168,6 +175,9 @@ esac
 
 # direnv
 command -v direnv &>/dev/null && eval "$(direnv hook zsh)"
+
+# zoxide — smarter cd (provides `z` / `zi`)
+command -v zoxide &>/dev/null && eval "$(zoxide init zsh)"
 
 # Suppress update nags
 export DISABLE_AUTOUPDATER=1
@@ -231,7 +241,6 @@ alias gst='git status' glog='git log --oneline --graph --decorate'
 # 12. UTILITY ALIASES
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-alias projects='cd /Volumes/HOLE-RAID-DRIVE/Projects'
 alias venva='source .venv/bin/activate'
 alias secure-reboot='sudo fdesetup authrestart'
 alias restart-screensharing='sudo launchctl kickstart -k system/com.apple.screensharing'
