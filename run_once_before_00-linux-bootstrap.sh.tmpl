@@ -97,9 +97,9 @@ case "$OS_FAMILY" in
     done
     if [ -n "$MISSING" ]; then
       echo "→ Installing apt prereqs:$MISSING"
-      $SUDO DEBIAN_FRONTEND=noninteractive apt-get update -qq
+      $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq
       # shellcheck disable=SC2086
-      $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $MISSING
+      $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $MISSING
     else
       echo "→ All apt prereqs already installed"
     fi
