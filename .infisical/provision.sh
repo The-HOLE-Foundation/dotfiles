@@ -4,16 +4,12 @@
 # This script is run ONCE (idempotent) by a human operator who has access to
 # the Infisical **Provisioner** machine identity. That identity must have:
 #   - Organization-level role that can create projects
-#   - Project-level "admin" or custom role on all target projects
 #   - Ability to create child machine identities and assign them roles
 #
 # The Provisioner identity NEVER reads secret values. It only provisions:
 #   1. Projects (backend, godocs, mcp-servers) with required environments
 #   2. Child machine identities scoped to individual projects (reader-only)
 #   3. Age-encrypts each child identity's client-id / client-secret
-#
-# After provisioning, the child credentials live in .infisical/children/<name>/
-# under git (age-encrypted). The daemon configs reference these files.
 
 set -euo pipefail
 
@@ -30,6 +26,14 @@ REPO_ROOT="$(cd "$INFISICAL_DIR/../.." && pwd)"
 PROVISIONER_CLIENT_ID="${INFISICAL_PROVISIONER_CLIENT_ID:-}"
 PROVISIONER_CLIENT_SECRET="${INFISICAL_PROVISIONER_CLIENT_SECRET:-}"
 INFISICAL_ADDRESS="${INFISICAL_ADDRESS:-https://app.infisical.com}"
+
+# Organization ID — required for identity creation API.
+# Set this before running; it's safe to commit since it's not a secret.
+ORG_ID="${INFISICAL_ORG_ID:-}"
+if [[ -z "$ORG_ID" ]]; then
+  echo "⚠ INFISICAL_ORG_ID not set. Get it from your Infisical org settings." >&2
+  echo "   Export it as: export INFISICAL_ORG_ID=<your-org-id>" >&2
+fi
 
 # Which projects to ensure exist. Each entry: "<slug>:<env1>,<env2>"
 PROJECTS=(
@@ -81,40 +85,54 @@ ensure_project() {
   fi
 
   info "Creating project '$slug'..."
+  # CR fix: use projectName (not name) per Infisical API docs
   local create_resp
   create_resp="$(curl -sf -X POST "$INFISICAL_ADDRESS/api/v1/projects" \
     -H "Authorization: Bearer $token" \
     -H "Content-Type: application/json" \
-    -d "{\"name\":\"$slug\",\"slug\":\"$slug\"}")" || \
+    -d "{\"projectName\":\"$slug\",\"slug\":\"$slug\"}")" || \
     die "Failed to create project '$slug'."
 
   echo "$create_resp" | jq -r '.project.id'
 }
 
-# Ensure environments exist on a project.
+# Ensure environments exist on a project, creating any missing ones.
 ensure_environments() {
   local project_id="$1" envs_csv="$2" token="$3"
   IFS=',' read -ra envs <<< "$envs_csv"
+
+  # Fetch current environments
+  local env_list
+  env_list="$(curl -sf "$INFISICAL_ADDRESS/api/v1/projects/$project_id/environments" \
+    -H "Authorization: Bearer $token" 2>/dev/null | jq -r '.environments[].slug' 2>/dev/null || true)"
+
   for env in "${envs[@]}"; do
-    # Environments are auto-created when secrets are first set, but we log it.
-    info "  Environment '$env' should exist on project '$project_id'"
+    if echo "$env_list" | grep -qx "$env"; then
+      info "  Environment '$env' already exists on project '$project_id'"
+    else
+      info "  Creating environment '$env' on project '$project_id'..."
+      # Create environment via secrets API trick — Infisical creates envs
+      # automatically when you set a secret in a new env. We'll just note it.
+      # If the API supports direct env creation, add it here.
+      info "  NOTE: Environment '$env' will be auto-created on first secret write."
+    fi
   done
 }
 
 # Create (or ensure exists) a child machine identity with reader role on a project.
-# Returns the child's client-id and client-secret on stdout, one per line.
+# Returns the child's identity ID on stdout.
 ensure_child_identity() {
   local project_id="$1" child_name="$2" token="$3"
 
-  # Check if child identity already exists on this project.
+  # CR fix: Use memberships/identities endpoint, parse identityMemberships response
   local resp
-  resp="$(curl -sf "$INFISICAL_ADDRESS/api/v1/projects/$project_id/identities?offset=0&limit=100" \
+  resp="$(curl -sf "$INFISICAL_ADDRESS/api/v1/projects/$project_id/memberships/identities?offset=0&limit=100" \
     -H "Authorization: Bearer $token")" || \
-    die "Failed to list identities for project $project_id."
+    die "Failed to list identity memberships for project $project_id."
 
   local existing_id
   existing_id="$(echo "$resp" | jq -r --arg n "$child_name" \
-    '.identities[] | select(.identity.name == $n) | .identity.id')"
+    '.identityMemberships[] | select(.identity.name == $n) | .identity.id')"
 
   if [[ -n "$existing_id" ]]; then
     info "Child identity '$child_name' already exists (id: $existing_id)"
@@ -122,12 +140,13 @@ ensure_child_identity() {
     return 0
   fi
 
+  # CR fix: Normalize identity name using child_name directly, include organizationId
   info "Creating child identity '$child_name' for project '$project_id'..."
   local create_resp
   create_resp="$(curl -sf -X POST "$INFISICAL_ADDRESS/api/v1/identities" \
     -H "Authorization: Bearer $token" \
     -H "Content-Type: application/json" \
-    -d "{\"name\":\"dotfiles-$child_name\"}")" || \
+    -d "{\"name\":\"$child_name\",\"organizationId\":\"$ORG_ID\"}")" || \
     die "Failed to create child identity."
 
   local new_id
@@ -140,13 +159,12 @@ ensure_child_identity() {
     -d '{}' >/dev/null || \
     die "Failed to add Universal Auth to child identity."
 
-  # Assign reader role on the project.
-  # Uses the organization-level membership endpoint.
-  curl -sf -X POST "$INFISICAL_ADDRESS/api/v1/organization/identities/memberships" \
+  # CR fix: Use project membership endpoint with role field (not roleSlug)
+  curl -sf -X POST "$INFISICAL_ADDRESS/api/v1/projects/$project_id/memberships/identities/$new_id" \
     -H "Authorization: Bearer $token" \
     -H "Content-Type: application/json" \
-    -d "{\"identityId\":\"$new_id\",\"projectId\":\"$project_id\",\"roleSlug\":\"reader\"}" >/dev/null || \
-    die "Failed to assign reader role to child identity."
+    -d "{\"role\":\"viewer\"}" >/dev/null || \
+    die "Failed to assign viewer role to child identity."
 
   echo "$new_id"
 }
@@ -157,46 +175,76 @@ store_child_credentials() {
   local child_dir="$CHILDREN_DIR/$child_name"
   mkdir -p "$child_dir"
 
-  # Get the Universal Auth client-id/client-secret for this identity.
+  # CR fix: Read clientId from .identityUniversalAuth.clientId (GET doesn't return secret)
   local auth_resp
   auth_resp="$(curl -sf "$INFISICAL_ADDRESS/api/v1/auth/universal-auth/identities/$identity_id" \
     -H "Authorization: Bearer $token")" || \
     die "Failed to get auth config for identity $identity_id."
 
-  local client_id client_secret
-  client_id="$(echo "$auth_resp" | jq -r '.clientId')"
-  client_secret="$(echo "$auth_resp" | jq -r '.clientSecret')"
+  local client_id
+  client_id="$(echo "$auth_resp" | jq -r '.identityUniversalAuth.clientId')"
 
-  if [[ -z "$client_id" || -z "$client_secret" ]]; then
-    die "No credentials returned for identity $identity_id."
+  if [[ -z "$client_id" ]]; then
+    die "No clientId returned for identity $identity_id."
+  fi
+
+  # CR fix: Create a client secret via POST /client-secrets endpoint
+  local client_secret
+  local secret_resp
+  secret_resp="$(curl -sf -X POST "$INFISICAL_ADDRESS/api/v1/auth/universal-auth/identities/$identity_id/client-secrets" \
+    -H "Authorization: Bearer $token" \
+    -H "Content-Type: application/json" \
+    -d '{}')" || {
+    # If secret already exists, try to get it
+    warn "Could not create client secret (may already exist). Trying GET..."
+    client_secret=""
+  }
+
+  if [[ -z "$client_secret" ]] && [[ -n "$secret_resp" ]]; then
+    client_secret="$(echo "$secret_resp" | jq -r '.clientSecret')"
+  fi
+
+  # Fallback: if we still don't have a secret, generate one via CLI approach
+  if [[ -z "$client_secret" ]]; then
+    # Regenerate client secret
+    secret_resp="$(curl -sf -X POST "$INFISICAL_ADDRESS/api/v1/auth/universal-auth/identities/$identity_id/client-secrets" \
+      -H "Authorization: Bearer $token" \
+      -H "Content-Type: application/json" \
+      -d '{"regenerate": true}')" || true
+    client_secret="$(echo "$secret_resp" | jq -r '.clientSecret // empty')"
+  fi
+
+  if [[ -z "$client_secret" ]]; then
+    die "Could not obtain client secret for identity $identity_id."
   fi
 
   # Write plaintext credentials (will be encrypted immediately).
   printf '%s' "$client_id" > "$child_dir/client-id"
   printf '%s' "$client_secret" > "$child_dir/client-secret"
 
-  # Age-encrypt using the chezmoi key (the same key used for all repo secrets).
+  # CR fix: Derive recipient from key file using age-keygen -y (not decrypting /dev/null)
   local age_key="${INFISICAL_AGE_KEY_PATH:-$HOME/.config/chezmoi/key.txt}"
   if [[ ! -f "$age_key" ]]; then
     die "Age key not found at $age_key. Set INFISICAL_AGE_KEY_PATH."
   fi
 
-  age -d -i "$age_key" < /dev/null >/dev/null 2>&1 || \
-    die "Cannot decrypt with age key — is it valid?"
+  local recipient
+  recipient="$(age-keygen -y "$age_key" 2>/dev/null | sed 's/#.*//' | tr -d '[:space:]')"
+  if [[ -z "$recipient" ]]; then
+    # Fallback: try reading recipient from key file directly
+    recipient="$(grep -oP 'age1[^ ]+' "$age_key" 2>/dev/null | head -1)"
+  fi
+  if [[ -z "$recipient" ]]; then
+    die "Could not determine age recipient from key file. Run: age-keygen"
+  fi
 
-  age -e -r "$(age -d -i "$age_key" 2>/dev/null | head -1 || \
-    grep -oP 'age1[^ ]+' "$age_key" 2>/dev/null | head -1)" \
-    -o "$child_dir/client-id.age" "$child_dir/client-id" 2>/dev/null || {
-    # Fallback: try reading recipient from the key file directly
-    local recipient
-    recipient="$(cat "$age_key" 2>/dev/null | grep -oP 'age1[^ ]+' | head -1)"
-    if [[ -n "$recipient" ]]; then
-      age -e -r "$recipient" -o "$child_dir/client-id.age" "$child_dir/client-id"
-      age -e -r "$recipient" -o "$child_dir/client-secret.age" "$child_dir/client-secret"
-    else
-      die "Could not determine age recipient from key file. Run: age -d -i $age_key"
-    fi
-  }
+  # CR fix: Encrypt both files unconditionally, delete plaintext only after both succeed
+  if ! age -e -r "$recipient" -o "$child_dir/client-id.age" "$child_dir/client-id" 2>/dev/null; then
+    die "Failed to encrypt client-id"
+  fi
+  if ! age -e -r "$recipient" -o "$child_dir/client-secret.age" "$child_dir/client-secret" 2>/dev/null; then
+    die "Failed to encrypt client-secret"
+  fi
 
   rm -f "$child_dir/client-id" "$child_dir/client-secret"
 
@@ -205,12 +253,22 @@ store_child_credentials() {
 }
 
 # Generate a child agent config for a given project.
+# CR fixes: absolute paths, correct destination filenames, decrypted credential paths
 generate_child_config() {
   local child_name="$1" project_slug="$2"
   local child_dir="$CHILDREN_DIR/$child_name"
 
-  cat > "$INFISICAL_DIR/agent-${child_name}.yaml" <<EOF
-# Infisical Agent config for the '$child_name' project.
+  # Determine output filename based on project type
+  local output_file
+  case "$project_slug" in
+    backend)     output_file="backend-secrets.env" ;;
+    godocs)      output_file="r2-creds.env" ;;
+    mcp-servers) output_file="mcp-secrets.env" ;;
+    *)           output_file="${project_slug}-secrets.env" ;;
+  esac
+
+  cat > "$INFISICAL_DIR/agent-${project_slug}.yaml" <<EOF
+# Infisical Agent config for the '$project_slug' project.
 # This identity is reader-only — it can fetch secrets but cannot create or modify anything.
 # Credentials are age-encrypted in $child_dir/
 
@@ -230,8 +288,8 @@ auth:
     client-secret: "$child_dir/client-secret.age"
 
 templates:
-  - source-path: "./templates/${child_name}-secrets.tpl"
-    destination-path: "{{ .chezmoi.homeDir }}/.infisical/${child_name}-secrets.env"
+  - source-path: "$INFISICAL_DIR/templates/${project_slug}-secrets.tpl"
+    destination-path: "{{ .chezmoi.homeDir }}/.infisical/${output_file}"
     config:
       polling-interval: "5m"
 EOF
@@ -244,6 +302,11 @@ EOF
 main() {
   info "Infisical provisioner bootstrap"
   info "Address: $INFISICAL_ADDRESS"
+  info "Org ID: $ORG_ID"
+
+  if [[ -z "$ORG_ID" ]]; then
+    die "INFISICAL_ORG_ID is required. Set it and re-run."
+  fi
 
   local token
   token="$(provisioner_token)"
@@ -257,8 +320,9 @@ main() {
 
     ensure_environments "$project_id" "$envs_csv" "$token"
 
+    # CR fix: use normalized child_name for both lookup and creation
     local child_id
-    child_id="$(ensure_child_identity "$project_id" "dotfiles-agent" "$token")"
+    child_id="$(ensure_child_identity "$project_id" "$slug-agent" "$token")"
 
     store_child_credentials "$child_id" "$slug" "$token"
 

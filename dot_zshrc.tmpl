@@ -269,7 +269,8 @@ alias mac-edit='chezmoi edit'
 # 14. CLOUD & INFRASTRUCTURE
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-alias aws-login='infisical run --env=prod --path=/aws --project master -- aws configure'
+# aws-login uses infisical run; replace <master-project-id> with the actual Infisical project UUID
+alias aws-login='infisical run --projectId=<master-project-id> --env prod -- aws configure'
 alias aws-sso='aws sso login --profile hole-admin'
 alias aws-who='aws sts get-caller-identity'
 alias s3-ls-mipds='aws s3 ls s3://hole-foia-deep-archive/MIPDS/ --human-readable --summarize'
@@ -443,6 +444,6 @@ fi
   This means fresh deploys without the agent get empty values, matching
   the old `|| true` behavior from Doppler template baking.
 */ -}}
-{{- if .fileExists (joinPath .chezmoi.homeDir ".infisical/backend-secrets.env") }}
-source "{{ .chezmoi.homeDir }}/.infisical/backend-secrets.env"
-{{- end }}
+if [[ -r "$HOME/.infisical/backend-secrets.env" ]]; then
+  source "$HOME/.infisical/backend-secrets.env"
+fi

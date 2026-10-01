@@ -101,7 +101,7 @@ RCLONE_R2
 R2_CONFIGURED=0
 if command -v rclone >/dev/null 2>&1; then
   # Try Infisical Agent rendered file first (preferred).
-  R2_CONF="{{ .chezmoi.homeDir }}/.infisical/r2-creds.env"
+  R2_CONF="{{ .chezmoi.homeDir }}/.infisical/godocs-secrets.env"
   if [[ -f "$R2_CONF" ]]; then
     # shellcheck disable=SC1090
     . "$R2_CONF"
@@ -113,7 +113,7 @@ if command -v rclone >/dev/null 2>&1; then
 
   # Fall back to Infisical CLI.
   if [[ "$R2_CONFIGURED" -eq 0 ]] && command -v infisical &>/dev/null; then
-    eval "$(infisical run --env=dev --path=/ --project godocs \
+    eval "$(infisical run --env=dev --path=/ --projectId=<godocs-project-id> \
       -- sh -c 'printf "R2_ACCESS_KEY_ID=%s\nR2_SECRET_ACCESS_KEY=%s\nR2_ACCOUNT_ID=%s" "$R2_ACCESS_KEY_ID" "$R2_SECRET_ACCESS_KEY" "$R2_ACCOUNT_ID"' 2>/dev/null)" || true
     if [[ -n "${R2_ACCESS_KEY_ID:-}" && -n "${R2_SECRET_ACCESS_KEY:-}" && -n "${R2_ACCOUNT_ID:-}" ]]; then
       write_r2_remote "$R2_ACCESS_KEY_ID" "$R2_SECRET_ACCESS_KEY" "$R2_ACCOUNT_ID"

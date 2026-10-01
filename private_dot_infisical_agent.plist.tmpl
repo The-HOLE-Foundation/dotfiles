@@ -15,6 +15,7 @@
     launchctl unload ~/Library/LaunchAgents/com.infisical.agent.plist
     rm ~/Library/LaunchAgents/com.infisical.agent.plist
 -->
+<plist version="1.0">
 <dict>
   <key>Label</key>
   <string>com.infisical.agent</string>
@@ -28,7 +29,8 @@
   </array>
 
   <key>EnvironmentVariables</key>
-  <dict>
+  <plist version="1.0">
+<dict>
     <key>INFISICAL_ADDRESS</key>
     <string>https://app.infisical.com</string>
   </dict>
@@ -37,7 +39,8 @@
   <true/>
 
   <key>KeepAlive</key>
-  <dict>
+  <plist version="1.0">
+<dict>
     <key>SuccessfulExit</key>
     <false/>
     <key>Crashed</key>

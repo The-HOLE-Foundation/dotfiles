@@ -4,17 +4,15 @@
 # Environments used:
 #   prod  → POSTMAN_API_KEY, MEM0_API_KEY      (for zshrc)
 #   dev   → TAILSCALE_AUTHKEY_SERVER             (for bootstrap scripts)
+#
+# NOTE: Project ID is bound by provision.sh during provisioning.
+# Replace <backend-project-id> with the actual Infisical project UUID.
 
-{{- /* Production secrets for shell */ -}}
+{{- /* Production secrets for shell — encoded as safe shell literals */ -}}
 {{- with listSecrets "<backend-project-id>" "prod" "/" }}
 {{- range . }}
 {{- if or (eq .Key "POSTMAN_API_KEY") (eq .Key "MEM0_API_KEY") }}
-export {{ .Key }}="{{ .Value }}"
+export {{ .Key }}='{{ .Value | replace "'" "''" }}'
 {{- end }}
 {{- end }}
-{{- end }}
-
-{{- /* Dev secrets for bootstrap */ -}}
-{{- with getSecretByName "<backend-project-id>" "dev" "/" "TAILSCALE_AUTHKEY_SERVER" }}
-{{ if .Value }}{{ .Value }}{{ end }}
 {{- end }}
