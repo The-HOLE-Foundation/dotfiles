@@ -5,9 +5,12 @@
 # Output file: mcp-secrets.env (consumed by run_once_after_install-project-legal.sh.tmpl)
 #
 # NOTE: Project ID is bound by provision.sh during provisioning.
+# Keys are filtered to valid shell identifiers only.
 
 {{- with listSecrets "<mcp-servers-project-id>" "dev" "/" }}
 {{- range . }}
-{{ .Key }}='{{ .Value | replace "'" "''" }}'
+{{- if match "^[_a-zA-Z][_a-zA-Z0-9]*$" .Key }}
+{{ .Key }}='{{ .Value | replace "'" "'\\''" }}'
+{{- end }}
 {{- end }}
 {{- end }}

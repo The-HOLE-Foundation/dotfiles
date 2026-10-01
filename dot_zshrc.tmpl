@@ -269,8 +269,8 @@ alias mac-edit='chezmoi edit'
 # 14. CLOUD & INFRASTRUCTURE
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# aws-login uses infisical run; replace <master-project-id> with the actual Infisical project UUID
-alias aws-login='infisical run --projectId=<master-project-id> --env prod -- aws configure'
+# aws-login uses infisical run; set INFISICAL_MASTER_PROJECT_ID env var before use.
+alias aws-login='infisical run --projectId="${INFISICAL_MASTER_PROJECT_ID:-}" --env prod -- aws configure'
 alias aws-sso='aws sso login --profile hole-admin'
 alias aws-who='aws sts get-caller-identity'
 alias s3-ls-mipds='aws s3 ls s3://hole-foia-deep-archive/MIPDS/ --human-readable --summarize'

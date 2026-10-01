@@ -3,11 +3,12 @@
 <!--
   Infisical Agent LaunchAgent — persistent daemon on macOS.
 
-  Decrypts credentials from age-encrypted files, then starts the agent
+  Decrypts credentials from age-encrypted files at startup, then starts the agent
   to continuously render secrets into ~/.infisical/.
 
   Install (after chezmoi apply):
-    ln -sf ~/dotfiles/private_dot_infisical_agent.plist \
+    mkdir -p ~/Library/LaunchAgents ~/logs
+    ln -sf {{ .chezmoi.homeDir }}/private_dot_infisical_agent.plist \
       ~/Library/LaunchAgents/com.infisical.agent.plist
     launchctl load ~/Library/LaunchAgents/com.infisical.agent.plist
 
@@ -25,12 +26,11 @@
     <string>{{ .chezmoi.homeDir }}/.local/bin/infisical</string>
     <string>agent</string>
     <string>--config</string>
-    <string>{{ .chezmoi.homeDir }}/.config/infisical/agent-config.yaml</string>
+    <string>{{ .chezmoi.homeDir }}/.config/infisical/agent-backend.yaml</string>
   </array>
 
   <key>EnvironmentVariables</key>
-  <plist version="1.0">
-<dict>
+  <dict>
     <key>INFISICAL_ADDRESS</key>
     <string>https://app.infisical.com</string>
   </dict>
@@ -39,8 +39,7 @@
   <true/>
 
   <key>KeepAlive</key>
-  <plist version="1.0">
-<dict>
+  <dict>
     <key>SuccessfulExit</key>
     <false/>
     <key>Crashed</key>
@@ -55,7 +54,7 @@
 
   <key>WatchPaths</key>
   <array>
-    <string>{{ .chezmoi.homeDir }}/.config/infisical/agent-config.yaml</string>
+    <string>{{ .chezmoi.homeDir }}/.config/infisical/agent-backend.yaml</string>
   </array>
 </dict>
 </plist>

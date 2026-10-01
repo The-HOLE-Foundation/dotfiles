@@ -9,7 +9,7 @@
 {{- with listSecrets "<godocs-project-id>" "dev" "/" }}
 {{- range . }}
 {{- if or (eq .Key "R2_ACCESS_KEY_ID") (eq .Key "R2_SECRET_ACCESS_KEY") (eq .Key "R2_ACCOUNT_ID") }}
-{{ .Key }}='{{ .Value | replace "'" "''" }}'
+{{ .Key }}='{{ .Value | replace "'" "'\\''" }}'
 {{- end }}
 {{- end }}
 {{- end }}

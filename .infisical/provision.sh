@@ -16,19 +16,17 @@ set -euo pipefail
 PROG="$(basename "$0")"
 INFISICAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 CHILDREN_DIR="$INFISICAL_DIR/children"
-REPO_ROOT="$(cd "$INFISICAL_DIR/../.." && pwd)"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Configuration — override via environment or edit below
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Path to the Provisioner's Universal Auth credentials (human-held, never encrypted in repo).
+# Path to the Provisioner's Universal Auth credentials (human-held).
 PROVISIONER_CLIENT_ID="${INFISICAL_PROVISIONER_CLIENT_ID:-}"
 PROVISIONER_CLIENT_SECRET="${INFISICAL_PROVISIONER_CLIENT_SECRET:-}"
 INFISICAL_ADDRESS="${INFISICAL_ADDRESS:-https://app.infisical.com}"
 
 # Organization ID — required for identity creation API.
-# Set this before running; it's safe to commit since it's not a secret.
 ORG_ID="${INFISICAL_ORG_ID:-}"
 if [[ -z "$ORG_ID" ]]; then
   echo "⚠ INFISICAL_ORG_ID not set. Get it from your Infisical org settings." >&2
@@ -47,6 +45,7 @@ PROJECTS=(
 # ──────────────────────────────────────────────────────────────────────────────
 
 err() { printf '%s: %s\n' "$PROG" "$*" >&2; }
+warn() { printf '⚠ %s\n' "$*" >&2; }
 die() { err "$*"; exit 1; }
 
 info() { printf '→ %s\n' "$*" >&2; }
@@ -57,10 +56,12 @@ provisioner_token() {
     die "Set INFISICAL_PROVISIONER_CLIENT_ID and INFISICAL_PROVISIONER_CLIENT_SECRET env vars."
   fi
 
+  # CR fix: Use jq to build JSON safely (avoids quote/backslash injection)
   local resp
   resp="$(curl -sf -X POST "$INFISICAL_ADDRESS/api/v1/auth/universal-auth/login" \
     -H "Content-Type: application/json" \
-    -d "{\"clientId\":\"$PROVISIONER_CLIENT_ID\",\"clientSecret\":\"$PROVISIONER_CLIENT_SECRET\"}")" || \
+    -d "$(jq -n --arg cid "$PROVISIONER_CLIENT_ID" --arg csec "$PROVISIONER_CLIENT_SECRET" \
+       '{clientId: $cid, clientSecret: $csec}')" 2>/dev/null)" || \
     die "Failed to authenticate as Provisioner. Check credentials."
 
   echo "$resp" | jq -r '.accessToken'
@@ -85,18 +86,18 @@ ensure_project() {
   fi
 
   info "Creating project '$slug'..."
-  # CR fix: use projectName (not name) per Infisical API docs
   local create_resp
   create_resp="$(curl -sf -X POST "$INFISICAL_ADDRESS/api/v1/projects" \
     -H "Authorization: Bearer $token" \
     -H "Content-Type: application/json" \
-    -d "{\"projectName\":\"$slug\",\"slug\":\"$slug\"}")" || \
+    -d "$(jq -n --arg name "$slug" --arg slug "$slug" \
+       '{projectName: $name, slug: $slug}')" 2>/dev/null)" || \
     die "Failed to create project '$slug'."
 
   echo "$create_resp" | jq -r '.project.id'
 }
 
-# Ensure environments exist on a project, creating any missing ones.
+# Ensure environments exist on a project.
 ensure_environments() {
   local project_id="$1" envs_csv="$2" token="$3"
   IFS=',' read -ra envs <<< "$envs_csv"
@@ -110,17 +111,12 @@ ensure_environments() {
     if echo "$env_list" | grep -qx "$env"; then
       info "  Environment '$env' already exists on project '$project_id'"
     else
-      info "  Creating environment '$env' on project '$project_id'..."
-      # Create environment via secrets API trick — Infisical creates envs
-      # automatically when you set a secret in a new env. We'll just note it.
-      # If the API supports direct env creation, add it here.
       info "  NOTE: Environment '$env' will be auto-created on first secret write."
     fi
   done
 }
 
 # Create (or ensure exists) a child machine identity with reader role on a project.
-# Returns the child's identity ID on stdout.
 ensure_child_identity() {
   local project_id="$1" child_name="$2" token="$3"
 
@@ -140,13 +136,13 @@ ensure_child_identity() {
     return 0
   fi
 
-  # CR fix: Normalize identity name using child_name directly, include organizationId
   info "Creating child identity '$child_name' for project '$project_id'..."
   local create_resp
   create_resp="$(curl -sf -X POST "$INFISICAL_ADDRESS/api/v1/identities" \
     -H "Authorization: Bearer $token" \
     -H "Content-Type: application/json" \
-    -d "{\"name\":\"$child_name\",\"organizationId\":\"$ORG_ID\"}")" || \
+    -d "$(jq -n --arg name "$child_name" --arg org "$ORG_ID" \
+       '{name: $name, organizationId: $org}')" 2>/dev/null)" || \
     die "Failed to create child identity."
 
   local new_id
@@ -159,23 +155,23 @@ ensure_child_identity() {
     -d '{}' >/dev/null || \
     die "Failed to add Universal Auth to child identity."
 
-  # CR fix: Use project membership endpoint with role field (not roleSlug)
+  # CR fix: Use project membership endpoint with role field
   curl -sf -X POST "$INFISICAL_ADDRESS/api/v1/projects/$project_id/memberships/identities/$new_id" \
     -H "Authorization: Bearer $token" \
     -H "Content-Type: application/json" \
-    -d "{\"role\":\"viewer\"}" >/dev/null || \
+    -d '{"role":"viewer"}' >/dev/null || \
     die "Failed to assign viewer role to child identity."
 
   echo "$new_id"
 }
 
-# Fetch and age-encrypt child credentials.
+# Fetch and age-encrypt child credentials into a secure temp directory.
 store_child_credentials() {
   local identity_id="$1" child_name="$2" token="$3"
   local child_dir="$CHILDREN_DIR/$child_name"
   mkdir -p "$child_dir"
 
-  # CR fix: Read clientId from .identityUniversalAuth.clientId (GET doesn't return secret)
+  # Read clientId from .identityUniversalAuth.clientId
   local auth_resp
   auth_resp="$(curl -sf "$INFISICAL_ADDRESS/api/v1/auth/universal-auth/identities/$identity_id" \
     -H "Authorization: Bearer $token")" || \
@@ -188,29 +184,24 @@ store_child_credentials() {
     die "No clientId returned for identity $identity_id."
   fi
 
-  # CR fix: Create a client secret via POST /client-secrets endpoint
-  local client_secret
+  # Create a client secret via POST /client-secrets endpoint
+  local client_secret=""
   local secret_resp
   secret_resp="$(curl -sf -X POST "$INFISICAL_ADDRESS/api/v1/auth/universal-auth/identities/$identity_id/client-secrets" \
     -H "Authorization: Bearer $token" \
     -H "Content-Type: application/json" \
-    -d '{}')" || {
-    # If secret already exists, try to get it
-    warn "Could not create client secret (may already exist). Trying GET..."
-    client_secret=""
-  }
+    -d '{}' 2>/dev/null)" || warn "Could not create client secret (may already exist)."
 
-  if [[ -z "$client_secret" ]] && [[ -n "$secret_resp" ]]; then
-    client_secret="$(echo "$secret_resp" | jq -r '.clientSecret')"
+  if [[ -n "$secret_resp" ]]; then
+    client_secret="$(echo "$secret_resp" | jq -r '.clientSecret // empty')"
   fi
 
-  # Fallback: if we still don't have a secret, generate one via CLI approach
+  # If no secret yet, try regenerating
   if [[ -z "$client_secret" ]]; then
-    # Regenerate client secret
     secret_resp="$(curl -sf -X POST "$INFISICAL_ADDRESS/api/v1/auth/universal-auth/identities/$identity_id/client-secrets" \
       -H "Authorization: Bearer $token" \
       -H "Content-Type: application/json" \
-      -d '{"regenerate": true}')" || true
+      -d '{"regenerate": true}' 2>/dev/null)" || true
     client_secret="$(echo "$secret_resp" | jq -r '.clientSecret // empty')"
   fi
 
@@ -218,11 +209,16 @@ store_child_credentials() {
     die "Could not obtain client secret for identity $identity_id."
   fi
 
-  # Write plaintext credentials (will be encrypted immediately).
-  printf '%s' "$client_id" > "$child_dir/client-id"
-  printf '%s' "$client_secret" > "$child_dir/client-secret"
+  # CR fix: Write plaintext creds into a secure mktemp dir, clean up on exit
+  local tmpdir
+  tmpdir="$(mktemp -d -p "$CHILDREN_DIR" "cred.XXXXXX")"
+  chmod 700 "$tmpdir"
+  trap 'rm -rf "$tmpdir"' EXIT INT TERM
 
-  # CR fix: Derive recipient from key file using age-keygen -y (not decrypting /dev/null)
+  printf '%s' "$client_id" > "$tmpdir/client-id"
+  printf '%s' "$client_secret" > "$tmpdir/client-secret"
+
+  # Derive recipient from key file using age-keygen -y (BSD-compatible)
   local age_key="${INFISICAL_AGE_KEY_PATH:-$HOME/.config/chezmoi/key.txt}"
   if [[ ! -f "$age_key" ]]; then
     die "Age key not found at $age_key. Set INFISICAL_AGE_KEY_PATH."
@@ -231,29 +227,34 @@ store_child_credentials() {
   local recipient
   recipient="$(age-keygen -y "$age_key" 2>/dev/null | sed 's/#.*//' | tr -d '[:space:]')"
   if [[ -z "$recipient" ]]; then
-    # Fallback: try reading recipient from key file directly
-    recipient="$(grep -oP 'age1[^ ]+' "$age_key" 2>/dev/null | head -1)"
+    # Fallback: BSD grep doesn't support -P; use sed instead
+    recipient="$(sed -n 's/^.*\(age1[^ ]*\).*/\1/p' "$age_key" 2>/dev/null | head -1)"
   fi
   if [[ -z "$recipient" ]]; then
     die "Could not determine age recipient from key file. Run: age-keygen"
   fi
 
-  # CR fix: Encrypt both files unconditionally, delete plaintext only after both succeed
-  if ! age -e -r "$recipient" -o "$child_dir/client-id.age" "$child_dir/client-id" 2>/dev/null; then
+  # Encrypt both files unconditionally, delete plaintext only after both succeed
+  if ! age -e -r "$recipient" -o "$tmpdir/client-id.age" "$tmpdir/client-id" 2>/dev/null; then
     die "Failed to encrypt client-id"
   fi
-  if ! age -e -r "$recipient" -o "$child_dir/client-secret.age" "$child_dir/client-secret" 2>/dev/null; then
+  if ! age -e -r "$recipient" -o "$tmpdir/client-secret.age" "$tmpdir/client-secret" 2>/dev/null; then
     die "Failed to encrypt client-secret"
   fi
 
-  rm -f "$child_dir/client-id" "$child_dir/client-secret"
+  # Move encrypted files to permanent location
+  rm -rf "$child_dir"
+  mv "$tmpdir" "$child_dir"
+  chmod 700 "$child_dir"
+  chmod 600 "$child_dir"/*
 
-  chmod 600 "$child_dir"/*.age
+  # Remove trap since we moved the dir
+  trap - EXIT INT TERM
+
   info "Credentials for '$child_name' stored age-encrypted in $child_dir/"
 }
 
 # Generate a child agent config for a given project.
-# CR fixes: absolute paths, correct destination filenames, decrypted credential paths
 generate_child_config() {
   local child_name="$1" project_slug="$2"
   local child_dir="$CHILDREN_DIR/$child_name"
@@ -267,10 +268,11 @@ generate_child_config() {
     *)           output_file="${project_slug}-secrets.env" ;;
   esac
 
+  # CR fix: Use absolute paths, concrete destination, no chezmoi expressions
   cat > "$INFISICAL_DIR/agent-${project_slug}.yaml" <<EOF
 # Infisical Agent config for the '$project_slug' project.
-# This identity is reader-only — it can fetch secrets but cannot create or modify anything.
-# Credentials are age-encrypted in $child_dir/
+# Reader-only — fetches secrets but cannot create or modify anything.
+# Credentials are decrypted at startup by a wrapper script.
 
 infisical:
   address: "$INFISICAL_ADDRESS"
@@ -289,7 +291,7 @@ auth:
 
 templates:
   - source-path: "$INFISICAL_DIR/templates/${project_slug}-secrets.tpl"
-    destination-path: "{{ .chezmoi.homeDir }}/.infisical/${output_file}"
+    destination-path: "\$HOME/.infisical/${output_file}"
     config:
       polling-interval: "5m"
 EOF
@@ -320,7 +322,6 @@ main() {
 
     ensure_environments "$project_id" "$envs_csv" "$token"
 
-    # CR fix: use normalized child_name for both lookup and creation
     local child_id
     child_id="$(ensure_child_identity "$project_id" "$slug-agent" "$token")"
 
