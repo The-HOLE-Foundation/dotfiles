@@ -1,0 +1,30 @@
+{{- /*
+Shared Homebrew PATH snippet — included by every shell init file and every
+run_once script that needs `brew` (dotfiles#7).
+
+Homebrew's installer never writes its own PATH line anywhere; it only *prints*
+an `eval "$(... brew shellenv)"` for the user to copy-paste. In an automated
+chezmoi apply nobody reads that output, so brew ends up installed but invisible
+to every shell. This snippet is the single place that knows where brew can
+live, so the shells, the install scripts, and the CI assertions can't drift
+apart.
+
+POSIX sh only — it is sourced from sh, bash and zsh.
+
+Prefixes, in priority order:
+  darwin: /opt/homebrew  (Apple Silicon — the only prefix the installer
+                          supports today)
+          /usr/local     (Intel, pre-existing installs)
+  linux:  /home/linuxbrew/.linuxbrew  (default; installer had root or sudo)
+          $HOME/.linuxbrew            (per-user prefix via HOMEBREW_PREFIX)
+
+Silent no-op when none of them exist — on Alpine/musl there is no Homebrew at
+all and core tools come from apk (#62).
+*/ -}}
+for __brew in {{ if eq .chezmoi.os "darwin" }}/opt/homebrew/bin/brew /usr/local/bin/brew{{ else }}/home/linuxbrew/.linuxbrew/bin/brew "$HOME/.linuxbrew/bin/brew"{{ end }}; do
+  if [ -x "$__brew" ]; then
+    eval "$("$__brew" shellenv)"
+    break
+  fi
+done
+unset __brew

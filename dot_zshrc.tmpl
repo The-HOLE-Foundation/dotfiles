@@ -12,13 +12,7 @@ fi
 # 1. HOMEBREW (must be first so everything else finds brew-installed tools)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-if [[ -f /opt/homebrew/bin/brew ]]; then
-  eval "$(/opt/homebrew/bin/brew shellenv)"
-elif [[ -f /usr/local/bin/brew ]]; then
-  eval "$(/usr/local/bin/brew shellenv)"
-elif [[ -f /home/linuxbrew/.linuxbrew/bin/brew ]]; then
-  eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-fi
+{{ template "brew-shellenv" . }}
 {{ if and (eq .chezmoi.os "darwin") (stdinIsATTY) -}}
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 1b. KEYCHAIN UNLOCK FOR SSH SESSIONS (macOS)
@@ -43,7 +37,9 @@ source "${ZINIT_HOME}/zinit.zsh"
 # 3. COMPLETIONS + OH-MY-ZSH SNIPPETS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-fpath=(~/.zsh/completions /opt/homebrew/share/zsh/site-functions $fpath)
+# $HOMEBREW_PREFIX is exported by the brew shellenv above; the ${VAR:+...}
+# guard keeps a brew-less host (Alpine) from inserting a bare /share/... entry.
+fpath=(~/.zsh/completions ${HOMEBREW_PREFIX:+$HOMEBREW_PREFIX/share/zsh/site-functions} $fpath)
 
 zinit snippet OMZL::completion.zsh
 zinit snippet OMZP::git
@@ -422,10 +418,8 @@ n() {
 # PROMPT — Powerlevel10k
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-if [[ -f /opt/homebrew/share/powerlevel10k/powerlevel10k.zsh-theme ]]; then
-  source /opt/homebrew/share/powerlevel10k/powerlevel10k.zsh-theme
-elif [[ -f /home/linuxbrew/.linuxbrew/share/powerlevel10k/powerlevel10k.zsh-theme ]]; then
-  source /home/linuxbrew/.linuxbrew/share/powerlevel10k/powerlevel10k.zsh-theme
+if [[ -n "$HOMEBREW_PREFIX" && -f "$HOMEBREW_PREFIX/share/powerlevel10k/powerlevel10k.zsh-theme" ]]; then
+  source "$HOMEBREW_PREFIX/share/powerlevel10k/powerlevel10k.zsh-theme"
 fi
 [[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
 
@@ -434,7 +428,14 @@ fi
 #           (never hardcoded in source; agent polls cloud and writes files)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-{{- /*
+{{/*
+  No left-trim marker on purpose: the `{{-` that used to be here swallowed the
+  newline before the
+  `if` below, gluing it onto the end of the preceding comment line. zsh then
+  read `# ━━━…━━━if [[ -r … ]]; then` as one comment and hit an orphan `fi`,
+  which is a parse error that aborts the rest of ~/.zshrc. Found while testing
+  dotfiles#7.
+
   Source pre-rendered secret files written by the Infisical Agent daemon.
   The agent runs as a persistent background process, authenticates once to
   Infisical Cloud, and continuously renders secrets into files on disk.

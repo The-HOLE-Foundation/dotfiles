@@ -1,0 +1,5 @@
+# Homebrew — POSIX sh login shells, and anything that falls back to ~/.profile
+# (display managers, `sh -l`, bash login shells with no ~/.bash_profile).
+{{ template "brew-shellenv" . }}
+[ -f "$HOME/.deno/env" ] && . "$HOME/.deno/env"
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"

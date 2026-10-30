@@ -304,7 +304,10 @@ build_image() {
 #     not installed it, breaking the matrix gate's credibility).
 # A non-login shell inherits PATH from the Dockerfile's ENV, which is the
 # ground truth we want the matrix to assert against. Callers that need
-# brew on PATH must eval shellenv themselves (see brew_formulae_in_image).
+# brew on PATH must eval shellenv themselves (see brew_formulae_in_image) —
+# the image no longer ships an `ENV PATH=.../linuxbrew/bin` crutch, because
+# that masked whether the deploy itself wired up PATH (dotfiles#7). That
+# wiring is asserted during the image build instead; see Dockerfile.test.
 run_in_image() {
   local tag="$1"; shift
   docker run --rm --entrypoint /bin/bash "$tag" -c "$*"

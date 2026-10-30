@@ -30,18 +30,9 @@ _os_family() {
 OS_FAMILY="$(_os_family)"
 
 # ── Ensure brew is on PATH ────────────────────────────────────────────────────
-# Don't swallow stderr — if shellenv fails we want to know.
-{{- if eq .chezmoi.os "darwin" }}
-if [[ -x /opt/homebrew/bin/brew ]]; then
-  eval "$(/opt/homebrew/bin/brew shellenv)"
-elif [[ -x /usr/local/bin/brew ]]; then
-  eval "$(/usr/local/bin/brew shellenv)"
-fi
-{{- else }}
-if [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
-  eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-fi
-{{- end }}
+# Each run_once script is its own process, so the PATH the Homebrew install
+# script set up does not carry over. Same shared snippet as the shell files.
+{{ template "brew-shellenv" . }}
 
 if ! command -v brew >/dev/null 2>&1; then
   if [[ "$OS_FAMILY" == "alpine" ]]; then

@@ -1,2 +1,0 @@
-[ -f "$HOME/.deno/env" ] && . "$HOME/.deno/env"
-[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"

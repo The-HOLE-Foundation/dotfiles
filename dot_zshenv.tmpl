@@ -1,0 +1,14 @@
+{{ if ne .chezmoi.os "darwin" -}}
+# Homebrew — zsh NON-interactive, NON-login shells. This is the shell `ssh host
+# 'brew ...'`, `git`'s GIT_SSH_COMMAND, and most remote automation actually get:
+# no .zprofile, no .zshrc, only .zshenv. Without this, brew works when you log
+# in by hand and vanishes the moment anything scripts the box (dotfiles#7).
+#
+# Linux only, on purpose. On macOS /etc/zprofile runs path_helper AFTER .zshenv
+# and reshuffles PATH so /usr/bin wins; `brew shellenv` is a no-op the second
+# time (it skips a prefix already on PATH), so seeding it here would
+# permanently demote the brew prefix. macOS is covered by .zprofile/.zshrc,
+# which run after path_helper.
+{{ template "brew-shellenv" . }}
+{{ end -}}
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"

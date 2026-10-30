@@ -97,7 +97,32 @@ RUN if [ -n "${CHEZMOI_PROJECT}" ]; then \
 # `chezmoi init --apply` path was apparently tolerant of this; the split
 # init/apply path isn't, so we exclude encrypted files explicitly.
 RUN chezmoi apply --no-tty --exclude=encrypted
-ENV PATH="/home/linuxbrew/.linuxbrew/bin:${PATH}"
+
+# Step 4: prove the dotfiles put Homebrew on PATH by themselves (dotfiles#7).
+#
+# This used to be `ENV PATH="/home/linuxbrew/.linuxbrew/bin:${PATH}"`, which
+# papered over the bug: the image had brew on PATH because the Dockerfile put
+# it there, not because the deploy did. Every shell a user actually gets has to
+# find brew on its own, so assert each entry point separately:
+#   zsh  -lc  login       → ~/.zprofile
+#   zsh  -ic  interactive → ~/.zshrc          (`docker exec -it … zsh`)
+#   zsh  -c   neither     → ~/.zshenv         (`ssh host 'brew …'`)
+#   bash -lc  login       → /etc/profile.d + ~/.bash_profile
+#   bash -ic  interactive → ~/.bashrc
+#   sh   -lc  login       → /etc/profile.d + ~/.profile
+#
+# The BREWPATH= sentinel is grepped out of the shell's own output because an
+# interactive zsh also prints zinit/p10k chatter on first run.
+RUN set -eu; \
+    for probe in "zsh -lc" "zsh -ic" "zsh -c" "bash -lc" "bash -ic" "sh -lc"; do \
+      found="$($probe 'printf "BREWPATH=%s\n" "$(command -v brew)"' 2>/dev/null \
+               | grep -oE 'BREWPATH=/[^[:space:]]+' | tail -1 || true)"; \
+      if [ -n "$found" ]; then \
+        echo "✓ ${probe}: ${found#BREWPATH=}"; \
+      else \
+        echo "✗ ${probe}: brew NOT on PATH" >&2; exit 1; \
+      fi; \
+    done
 
 # Switch back to root for entrypoint
 USER root
