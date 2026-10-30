@@ -10,7 +10,14 @@ brew "age"          # file encryption (used by chezmoi for secrets)
 brew "bat"          # cat replacement
 brew "direnv"       # auto-load .envrc per project
 brew "doppler"              # secrets management (legacy — being replaced by infisical-agent)
-brew "infisical/get-cli/infisical"  # secrets management daemon (replaces doppler; agent renders secrets to files)
+# secrets management daemon (replaces doppler; agent renders secrets to files).
+# macOS only: the infisical/get-cli tap is GoReleaser-generated and declares
+# `depends_on :macos` with darwin-only download URLs, so on Linux `brew bundle`
+# aborts with "This formula requires macOS" and takes the whole `chezmoi apply`
+# down with it. Brewfiles are Ruby, so an OS guard is the supported way to say
+# this. Linux hosts need the CLI from Infisical's apt/rpm repo instead — see
+# .infisical/README.md.
+brew "infisical/get-cli/infisical" if OS.mac?
 brew "eza"          # ls replacement
 brew "fd"           # find replacement (used by fzf)
 brew "fnm"          # Node version manager
