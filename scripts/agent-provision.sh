@@ -129,10 +129,19 @@ if [ "$OS_FAMILY" != "alpine" ]; then
     echo "→ Installing Homebrew (shared prefix, agent-owned) as ${AGENT_USER}"
     su - "$AGENT_USER" -c 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
   fi
+  # Keep this byte-identical to the block in
+  # run_once_before_install-homebrew.sh.tmpl — both write this same path, and
+  # whichever runs last wins.
   cat > /etc/profile.d/linuxbrew.sh <<'PROFILE'
-if [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
-  eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-fi
+# Managed by chezmoi (run_once_before_install-homebrew.sh) — dotfiles#7.
+# Puts Homebrew on PATH for every login shell on this machine.
+for __brew in /home/linuxbrew/.linuxbrew/bin/brew "$HOME/.linuxbrew/bin/brew"; do
+  if [ -x "$__brew" ]; then
+    eval "$("$__brew" shellenv)"
+    break
+  fi
+done
+unset __brew
 PROFILE
   chmod 0644 /etc/profile.d/linuxbrew.sh
 fi

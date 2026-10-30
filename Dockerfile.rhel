@@ -68,7 +68,21 @@ RUN if [ -n "${CHEZMOI_PROJECT}" ]; then \
 # Step 3: apply dotfiles.
 # --exclude=encrypted: age key not present in CI (same reason as Dockerfile.test).
 RUN chezmoi apply --no-tty --exclude=encrypted
-ENV PATH="/home/linuxbrew/.linuxbrew/bin:${PATH}"
+
+# Same self-sufficiency assertion as Dockerfile.test (dotfiles#7): the image
+# must find brew through the deployed shell files, not through an ENV PATH the
+# Dockerfile injected. RHEL's zsh has no /etc/zprofile that sources
+# /etc/profile, so the zsh probes exercise ~/.zshenv and ~/.zprofile directly.
+RUN set -eu; \
+    for probe in "zsh -lc" "zsh -ic" "zsh -c" "bash -lc" "bash -ic" "sh -lc"; do \
+      found="$($probe 'printf "BREWPATH=%s\n" "$(command -v brew)"' 2>/dev/null \
+               | grep -oE 'BREWPATH=/[^[:space:]]+' | tail -1 || true)"; \
+      if [ -n "$found" ]; then \
+        echo "✓ ${probe}: ${found#BREWPATH=}"; \
+      else \
+        echo "✗ ${probe}: brew NOT on PATH" >&2; exit 1; \
+      fi; \
+    done
 
 # Switch back to root for entrypoint
 USER root

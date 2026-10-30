@@ -1,5 +1,22 @@
 #!/bin/bash
-# Install Homebrew if missing (works on macOS and Debian/RHEL-family Linux).
+# Install Homebrew if missing AND make it usable (works on macOS and
+# Debian/RHEL-family Linux).
+#
+# dotfiles#7: the upstream installer never writes a PATH line anywhere. It
+# prints an `eval "$(... brew shellenv)"` and expects a human to copy-paste it.
+# Under an automated `chezmoi apply` nobody is reading that output, so brew
+# gets installed and then stays invisible — the user has no way to even tell it
+# worked. This script therefore owns three things, not one:
+#
+#   1. install brew (non-interactively where that is safe),
+#   2. resolve the prefix it actually landed in and put it on PATH for the
+#      remaining run_once scripts,
+#   3. persist it system-wide via /etc/profile.d on Linux, for the shells
+#      chezmoi does not manage.
+#
+# Per-user shells are covered separately by the same shared snippet in
+# .zshenv / .zprofile / .zshrc / .bash_profile / .bashrc
+# (.chezmoitemplates/brew-shellenv).
 #
 # Alpine/musl is explicitly skipped: Homebrew's Linuxbrew binaries link
 # against glibc and will not run on Alpine's musl libc. Core tools are
@@ -32,14 +49,89 @@ if [[ "$OS_FAMILY" == "alpine" ]]; then
   exit 0
 fi
 
-if ! command -v brew &>/dev/null; then
-  echo "→ Installing Homebrew..."
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+# ── Privilege mode ───────────────────────────────────────────────────────────
+# Same three-way split as run_once_before_00-linux-bootstrap.sh (#99).
+if [[ "$(id -u)" -eq 0 ]]; then
+  PRIV=root
+  SUDO=""
+elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+  PRIV=sudo
+  SUDO="sudo"
+else
+  PRIV=none
+  SUDO=""
 fi
 
-# Ensure brew is in PATH for subsequent scripts
-{{- if eq .chezmoi.os "darwin" }}
-eval "$(/opt/homebrew/bin/brew shellenv)" 2>/dev/null || eval "$(/usr/local/bin/brew shellenv)" 2>/dev/null
+# ── Install ──────────────────────────────────────────────────────────────────
+if ! command -v brew &>/dev/null; then
+  echo "→ Installing Homebrew..."
+  # NONINTERACTIVE suppresses the "Press RETURN to continue" prompt, which
+  # otherwise hangs a `chezmoi apply` that happens to run on a TTY. Only set it
+  # when the installer will not need to ask for a sudo password it cannot get:
+  # root and passwordless-sudo are safe, an interactive sudo prompt is not.
+  BREW_INSTALL_ENV=()
+  if [[ "$PRIV" != "none" ]] || [[ ! -t 0 ]]; then
+    BREW_INSTALL_ENV+=("NONINTERACTIVE=1")
+  fi
+  env "${BREW_INSTALL_ENV[@]}" /bin/bash -c \
+    "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+fi
+
+# ── Resolve the prefix brew actually landed in ───────────────────────────────
+# Shared with every shell init file so the two can't drift apart.
+{{ template "brew-shellenv" . }}
+
+if ! command -v brew >/dev/null 2>&1; then
+  # Loud, not silent. The old version swallowed shellenv's stderr and exited 0,
+  # so a failed install looked identical to a successful one until the Brewfile
+  # step died several minutes later with a confusing error.
+  echo "✗ Homebrew is not on PATH after installation (OS family: ${OS_FAMILY}, privilege: ${PRIV})."
+{{- if ne .chezmoi.os "darwin" }}
+  echo "  Checked: /home/linuxbrew/.linuxbrew/bin/brew and \$HOME/.linuxbrew/bin/brew"
+  if [[ "$PRIV" == "none" ]]; then
+    echo "  This machine has no root and no passwordless sudo, so the installer"
+    echo "  cannot create /home/linuxbrew. Provision the prefix from a root"
+    echo "  phase first — see scripts/agent-provision.sh."
+  fi
 {{- else }}
-eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" 2>/dev/null
+  echo "  Checked: /opt/homebrew/bin/brew and /usr/local/bin/brew"
 {{- end }}
+  exit 1
+fi
+
+echo "✓ Homebrew ${HOMEBREW_PREFIX:-?} ($(brew --version | head -1))"
+
+{{ if ne .chezmoi.os "darwin" -}}
+# ── Persist system-wide (Linux) ──────────────────────────────────────────────
+# /etc/profile.d covers every login shell on the box, including users and
+# shells chezmoi does not manage, and survives the dotfiles being removed.
+# Needs root/sudo; an unprivileged agent space relies on the per-user dotfiles
+# (and on the root provisioning phase having written this already).
+# Same filename scripts/agent-provision.sh writes, so a machine that was
+# root-provisioned first and then self-applied ends up with one file, not two.
+PROFILE_D=/etc/profile.d/linuxbrew.sh
+if [[ "$PRIV" == "none" ]]; then
+  echo "  ℹ Unprivileged — skipping ${PROFILE_D}; per-user shell files still cover it."
+elif [[ -d /etc/profile.d ]]; then
+  $SUDO tee "$PROFILE_D" >/dev/null <<'PROFILE'
+# Managed by chezmoi (run_once_before_install-homebrew.sh) — dotfiles#7.
+# Puts Homebrew on PATH for every login shell on this machine.
+for __brew in /home/linuxbrew/.linuxbrew/bin/brew "$HOME/.linuxbrew/bin/brew"; do
+  if [ -x "$__brew" ]; then
+    eval "$("$__brew" shellenv)"
+    break
+  fi
+done
+unset __brew
+PROFILE
+  $SUDO chmod 0644 "$PROFILE_D"
+  echo "✓ System-wide PATH entry written to ${PROFILE_D}"
+fi
+{{ end -}}
+
+# ── Tell the user what to do about the shell they're sitting in ──────────────
+# New shells are handled; the *current* one can't be, because a child process
+# cannot mutate its parent's environment. This is the only copy-paste left, and
+# it is unavoidable.
+echo "  New shells pick up brew automatically. For THIS shell, run:"
+echo "      eval \"\$(${HOMEBREW_PREFIX}/bin/brew shellenv)\""

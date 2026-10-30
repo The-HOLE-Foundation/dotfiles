@@ -160,11 +160,13 @@ jobs:
 
       - name: Verify core tools available on RHEL
         run: |
+          # `su -` gives a LOGIN shell on purpose (dotfiles#7): the tools must be
+          # reachable through the deployed shell files. The old version ran a
+          # non-login shell and hand-evaluated brew shellenv first, so it would
+          # have passed even with the PATH wiring completely broken.
           docker run --rm --entrypoint /bin/su dotfiles-rhel:test \
-            jth -s /bin/bash -c '
+            -l jth -s /bin/bash -c '
               set -e
-              # Ensure Linuxbrew is on PATH
-              eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" 2>/dev/null || true
               echo "=== Verifying RHEL core tools ==="
               for tool in zsh git curl jq fzf bat rg; do
                 if command -v "$tool" >/dev/null 2>&1; then

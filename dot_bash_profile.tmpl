@@ -1,4 +1,8 @@
-
+# Homebrew — bash LOGIN shells (ssh, `bash -l`, console logins). bash reads
+# .bash_profile instead of .bashrc here, so the snippet has to be in both.
+# On macOS this deliberately runs after /etc/profile's path_helper, which would
+# otherwise push the brew prefix behind /usr/bin.
+{{ template "brew-shellenv" . }}
 # >>> conda initialize >>>
 # !! Contents within this block are managed by 'conda init' !!
 if [ -f "$HOME/micromamba/bin/conda" ]; then

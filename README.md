@@ -148,6 +148,50 @@ chezmoi apply --dry-run
 
 ---
 
+## Homebrew on PATH
+
+Homebrew's installer never writes a PATH line anywhere — it prints an
+`eval "$(… brew shellenv)"` and waits for a human to copy-paste it. Under an
+automated `chezmoi apply` nobody reads that output, so brew used to end up
+installed and invisible ([#7](https://github.com/The-HOLE-Foundation/dotfiles/issues/7)).
+The deploy now owns PATH end to end.
+
+One snippet, `.chezmoitemplates/brew-shellenv`, knows every prefix brew can
+live in (`/opt/homebrew`, `/usr/local`, `/home/linuxbrew/.linuxbrew`,
+`$HOME/.linuxbrew`) and is included by every consumer, so the shells and the
+install scripts can't drift apart. On Linux the install script additionally
+writes `/etc/profile.d/linuxbrew.sh`, which covers users and shells chezmoi
+does not manage.
+
+| Shell invocation | Reads | brew on PATH? |
+|------------------|-------|---------------|
+| `zsh -l` (login / SSH) | `.zshenv` → `.zprofile` | yes |
+| `zsh -i` (`docker exec -it … zsh`) | `.zshenv` → `.zshrc` | yes |
+| `zsh -c` (`ssh host 'brew …'`) | `.zshenv` | Linux only — see below |
+| `bash -l` (login / SSH) | `/etc/profile.d` → `.bash_profile` | yes |
+| `bash -i` | `.bashrc` | yes |
+| `sh -l` | `/etc/profile.d` → `.profile` | yes |
+| `bash -c` | nothing | no — bash reads no startup file here |
+
+`.zshenv` carries the snippet on Linux only. On macOS `/etc/zprofile` runs
+`path_helper` *after* `.zshenv` and reshuffles PATH so `/usr/bin` wins; since
+`brew shellenv` is a no-op for a prefix already on PATH, seeding it that early
+would permanently demote Homebrew. macOS is covered by `.zprofile`/`.zshrc`,
+which run after `path_helper`.
+
+Verify on any machine:
+
+```bash
+for probe in "zsh -lc" "zsh -ic" "zsh -c" "bash -lc" "bash -ic" "sh -lc"; do
+  printf '%-10s %s\n' "$probe" "$($probe 'command -v brew' 2>/dev/null || echo MISSING)"
+done
+```
+
+`Dockerfile.test` and `Dockerfile.rhel` run exactly this check at build time, so
+a regression fails CI instead of reaching a machine.
+
+---
+
 ## Core Tool Stack (Linux + macOS)
 
 Installed via `dot_Brewfile.core` on Linux, included in the full `dot_Brewfile` on macOS:
@@ -223,8 +267,11 @@ dotfiles/
 ├── .chezmoiignore                     # files chezmoi skips
 │
 ├── dot_zshrc.tmpl                     # → ~/.zshrc (main shell config)
-├── dot_zshenv                         # → ~/.zshenv
-├── dot_zprofile                       # → ~/.zprofile
+├── dot_zshenv.tmpl                    # → ~/.zshenv  (non-login, non-interactive)
+├── dot_zprofile.tmpl                  # → ~/.zprofile (login)
+├── dot_bash_profile.tmpl              # → ~/.bash_profile (bash login)
+├── dot_bashrc.tmpl                    # → ~/.bashrc (bash interactive)
+├── dot_profile.tmpl                   # → ~/.profile (sh login)
 ├── dot_gitconfig                      # → ~/.gitconfig
 ├── dot_p10k.zsh                       # → ~/.p10k.zsh
 ├── dot_Brewfile                       # → ~/.Brewfile (macOS full)
@@ -239,7 +286,9 @@ dotfiles/
 │
 ├── private_dot_ssh/config.tmpl        # → ~/.ssh/config (OS-conditional)
 │
-├── run_once_before_install-homebrew.sh.tmpl    # 1. Install Homebrew
+├── .chezmoitemplates/brew-shellenv            # shared "put brew on PATH" snippet
+│
+├── run_once_before_install-homebrew.sh.tmpl    # 1. Install Homebrew + wire up PATH
 ├── run_once_before_install-toolchains.sh.tmpl  # 2. Tailscale + macOS toolchains
 ├── run_once_after_install-brewfile.sh.tmpl     # 3. brew bundle + Node + Claude
 ├── run_once_after_install-launchagent.sh.tmpl  # 4. macOS auto-save agent

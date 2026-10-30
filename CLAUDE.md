@@ -34,6 +34,14 @@ Cross-platform development environment managed by chezmoi.
 - Legacy Doppler calls remain as fallbacks during the migration period
 - See `.infisical/README.md` for provisioning and architecture details
 
+### Homebrew PATH
+`.chezmoitemplates/brew-shellenv` is the single source of truth for "where can
+brew be, and how do I put it on PATH". Every shell init file and every
+run_once script includes it with `{{ template "brew-shellenv" . }}` — never
+hardcode `/opt/homebrew` or `/home/linuxbrew/.linuxbrew` again. See the
+"Homebrew on PATH" section in README.md for the shell-by-shell contract and
+why `.zshenv` is Linux-only.
+
 ### Script Execution Order
 1. `run_once_before_install-homebrew.sh.tmpl` — Install Homebrew
 2. `run_once_before_install-toolchains.sh.tmpl` — Tailscale + macOS dev tools
