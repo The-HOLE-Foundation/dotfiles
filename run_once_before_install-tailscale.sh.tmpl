@@ -30,7 +30,11 @@ fi
 if command -v tailscale &>/dev/null; then
   if ! tailscale status &>/dev/null; then
     sudo systemctl enable --now tailscaled 2>/dev/null || true
-{{- if or (lookPath "infisical") (.fileExists (joinPath .chezmoi.homeDir ".infisical/tailscale-authkey.txt")) }}
+{{- /* `stat`, not `.fileExists` — there is no fileExists function in chezmoi,
+       and Go's `or` evaluates every argument eagerly, so the bad call aborted
+       `chezmoi apply` on every Linux host regardless of whether infisical was
+       on PATH. Found while testing dotfiles#7 end-to-end. */ -}}
+{{- if or (lookPath "infisical") (stat (joinPath .chezmoi.homeDir ".infisical/tailscale-authkey.txt")) }}
     # Try Infisical Agent rendered file first (preferred), then fall back to CLI.
     TS_AUTHKEY=""
     if [ -f "{{ .chezmoi.homeDir }}/.infisical/tailscale-authkey.txt" ]; then
