@@ -36,6 +36,14 @@ This repo owns **Layer 2**. For container stacks and infrastructure, see [hole-d
 
 ## Quick Start
 
+OR Manually, if no homebrew
+#### Claude-Code
+curl -fsSL https://claude.ai/install.sh | bash
+### Opencode
+curl -fsSL https://opencode.ai/install | bash
+### Codex
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+
 ### Fresh Mac
 
 ```bash
