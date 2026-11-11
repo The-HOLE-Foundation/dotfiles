@@ -204,8 +204,9 @@ over SSH because its login is kept in the macOS keychain.
   runs as a launchd daemon and signs in with a reader-only machine identity. There is one identity
   per project, created by [`.infisical/provision.sh`](.infisical/provision.sh). The agent writes
   `~/.infisical/*.env` files with mode 600; `provision.sh` sets their names. `dot_zshrc.tmpl`
-  sources `~/.infisical/backend-secrets.env` when it exists. chezmoi itself never calls a secrets
-  manager, so there's no keychain and no network call at `chezmoi apply` or at shell start.
+  only sources `~/.infisical/backend-secrets.env` when it exists, so shell start needs no keychain
+  and no network call. (Some `run_once_*` scripts still fetch a secret during `chezmoi apply`:
+  the rendered file first, then `infisical run`, then legacy Doppler.)
 - **Interactive use**, on a machine where you're logged in:
   `infisical run --projectId <id> --env <env> -- <command>`. This needs `infisical login`, which
   uses the keychain, so it doesn't work over SSH.
