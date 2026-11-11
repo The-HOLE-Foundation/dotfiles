@@ -8,7 +8,7 @@
 
 {{- with listSecrets "@PROJECT_ID@" "@RENDER_ENV@" "/" }}
 {{- range . }}
-{{- if match "^[_a-zA-Z][_a-zA-Z0-9]*$" .Key }}
+{{- if regexMatch "^[_a-zA-Z][_a-zA-Z0-9]*$" .Key }}
 export {{ .Key }}='{{ .Value | replace "'" "'\\''" }}'
 {{- end }}
 {{- end }}
