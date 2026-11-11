@@ -33,3 +33,9 @@ Dockerfile.test
 
 # Vendored binaries — never commit platform-specific executables
 bin/chezmoi
+
+# Infisical agent: per-machine credentials and generated configs.
+# children/ holds age-encrypted reader identities; provision.sh may leave a
+# cred.XXXXXX temp dir there if it is interrupted.
+.infisical/children/
+.infisical/agent-*.yaml
