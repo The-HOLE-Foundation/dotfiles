@@ -34,11 +34,10 @@ cat <<'BANNER'
 
   Next steps (run manually — fresh hosts have no creds yet):
 
-    1. Authenticate to Infisical so the MCP servers can pull secrets:
-         infisical login --method=universal-auth --client-id=<id> --client-secret=<secret>
-       Then start the agent with:
-         infisical agent --config ~/.config/infisical/agent-mcp-servers.yaml
-       The agent renders MCP secrets into ~/.infisical/mcp-secrets.env.
+    1. Give the Infisical agent a reader identity for mcp-servers:
+         ~/dotfiles/.infisical/provision.sh mcp-servers
+       (or provision.sh import mcp-servers for one you made yourself).
+       Its LaunchAgent renders MCP secrets into ~/.infisical/mcp-servers-secrets.env.
 
     2. Clone Legal-Assistant-v3 and sync the uv workspace:
          git clone git@github.com:The-HOLE-Foundation/Legal-Assistant-v3.git ~/src/Legal-Assistant-v3

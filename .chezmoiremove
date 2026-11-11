@@ -1,0 +1,5 @@
+# Targets chezmoi should delete on apply.
+
+# Old single-project agent plist, replaced by per-project LaunchAgents
+# from .infisical/install-launchagents.sh.
+.infisical_agent.plist

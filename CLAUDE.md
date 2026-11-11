@@ -28,8 +28,9 @@ Cross-platform development environment managed by chezmoi.
 ```
 
 ### Secrets Management
-- **Infisical Agent** renders secrets to files (`~/.infisical/*.env`) via persistent daemon
+- **Infisical Agent** renders secrets to `~/.infisical/<slug>-secrets.env`, one LaunchAgent per project
 - Agents use Universal Auth (machine identity) with per-project reader roles
+- Projects are listed in `.infisical/projects.conf`; add a line to add one (no script edits)
 - `dot_zshrc.tmpl` sources pre-rendered files — no network call at apply time
 - Legacy Doppler calls remain as fallbacks during the migration period
 - See `.infisical/README.md` for provisioning and architecture details
@@ -56,9 +57,12 @@ When adding, removing, or modifying a profile, follow the 10-step onboarding che
 
 ## Secrets
 
-- **Primary: Infisical Agent** — persistent daemon renders secrets to `~/.infisical/*.env` files
+- **Primary: Infisical Agent** — renders secrets to `~/.infisical/<slug>-secrets.env` files
   - Machine identity (Universal Auth) with per-project reader roles
   - Provisioning key creates child identities but cannot read secrets
+  - `provision.sh [slug]` or `provision.sh import <slug>` stores the age-encrypted credentials in `.infisical/children/<slug>/` (gitignored, per machine)
+  - `run_onchange_after_install-infisical-agents.sh.tmpl` installs LaunchAgent `com.hole.infisical-agent.<slug>`, which runs `.infisical/agent-run.sh <slug>` (age-decrypt, then exec `infisical agent`). No keychain, so it works over SSH
+  - LaunchAgents start at GUI login, not at boot: a headless Mac needs auto-login or a LaunchDaemon
   - See `.infisical/README.md` for architecture and provisioning steps
 - **Legacy: Doppler** — still present as fallback during migration
   - `dot_zshrc.tmpl` sources pre-rendered files (no `{{ output "doppler" ... }}`)
