@@ -1,0 +1,15 @@
+{{- if eq .chezmoi.os "darwin" -}}
+#!/bin/bash
+# Install or refresh one Infisical agent LaunchAgent per provisioned project.
+# See .infisical/README.md. The work is done by .infisical/install-launchagents.sh.
+#
+# chezmoi re-runs this whenever the hashes below change, so it picks up:
+#   projects.conf:  {{ include ".infisical/projects.conf" | sha256sum }}
+#   installer:      {{ include ".infisical/install-launchagents.sh" | sha256sum }}
+#   wrapper:        {{ include ".infisical/agent-run.sh" | sha256sum }}
+#   credentials (new or rotated):
+{{- range glob (joinPath .chezmoi.sourceDir ".infisical/children/*/client-secret.age") }}
+#     {{ base (dir .) }} {{ include . | sha256sum }}
+{{- end }}
+exec /bin/bash {{ joinPath .chezmoi.sourceDir ".infisical/install-launchagents.sh" | quote }}
+{{ end -}}

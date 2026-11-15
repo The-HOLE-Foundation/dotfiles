@@ -1,44 +1,43 @@
 #!/usr/bin/env bash
-# provision.sh — Bootstrap Infisical infrastructure for dotfiles.
+# provision.sh: set up reader identities for the Infisical agent.
 #
-# This script is run ONCE (idempotent) by a human operator who has access to
-# the Infisical **Provisioner** machine identity. That identity must have:
+#   provision.sh                 provision every project in projects.conf
+#   provision.sh <slug>...       provision only these projects
+#   provision.sh import <slug>   store credentials for an identity you made
+#                                yourself (for example in the Infisical UI)
+#
+# A human operator runs this. Provisioning (not import) uses the Infisical
+# **Provisioner** machine identity, which must have:
 #   - Organization-level role that can create projects
 #   - Ability to create child machine identities and assign them roles
 #
 # The Provisioner identity NEVER reads secret values. It only provisions:
-#   1. Projects (backend, godocs, mcp-servers) with required environments
+#   1. Projects (from projects.conf) with required environments
 #   2. Child machine identities scoped to individual projects (reader-only)
-#   3. Age-encrypts each child identity's client-id / client-secret
+#   3. Age-encrypts each child identity's client-id / client-secret into
+#      children/<slug>/, and records the project ID in children/<slug>/project-id
+#
+# Afterwards it installs the per-project LaunchAgents (macOS), which run
+# agent-run.sh <slug>. To add a project, add a line to projects.conf.
+# Idempotent, but each run creates a new client secret for the identity.
 
 set -euo pipefail
 
 PROG="$(basename "$0")"
-INFISICAL_DIR="$(cd "$(dirname "$0")" && pwd)"
-CHILDREN_DIR="$INFISICAL_DIR/children"
+
+# shellcheck source=lib.sh
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Configuration — override via environment or edit below
+# Configuration (environment)
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Path to the Provisioner's Universal Auth credentials (human-held).
+# The Provisioner's Universal Auth credentials (human-held). Not needed for import.
 PROVISIONER_CLIENT_ID="${INFISICAL_PROVISIONER_CLIENT_ID:-}"
 PROVISIONER_CLIENT_SECRET="${INFISICAL_PROVISIONER_CLIENT_SECRET:-}"
-INFISICAL_ADDRESS="${INFISICAL_ADDRESS:-https://app.infisical.com}"
 
-# Organization ID — required for identity creation API.
+# Organization ID, required for identity creation. Not needed for import.
 ORG_ID="${INFISICAL_ORG_ID:-}"
-if [[ -z "$ORG_ID" ]]; then
-  echo "⚠ INFISICAL_ORG_ID not set. Get it from your Infisical org settings." >&2
-  echo "   Export it as: export INFISICAL_ORG_ID=<your-org-id>" >&2
-fi
-
-# Which projects to ensure exist. Each entry: "<slug>:<env1>,<env2>"
-PROJECTS=(
-  "backend:dev,prod"
-  "godocs:dev"
-  "mcp-servers:dev"
-)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -165,33 +164,67 @@ ensure_child_identity() {
   echo "$new_id"
 }
 
-# Fetch and age-encrypt child credentials into a secure temp directory.
-store_child_credentials() {
-  local identity_id="$1" child_name="$2" token="$3"
-  local child_dir="$CHILDREN_DIR/$child_name"
-  mkdir -p "$child_dir"
+# Age recipient (public key) for the chezmoi age key.
+age_recipient() {
+  local age_key="$INFISICAL_AGE_KEY_PATH"
+  [[ -f "$age_key" ]] || die "Age key not found at $age_key. Set INFISICAL_AGE_KEY_PATH."
 
-  # Read clientId from .identityUniversalAuth.clientId
+  local recipient
+  recipient="$(age-keygen -y "$age_key" 2>/dev/null | sed 's/#.*//' | tr -d '[:space:]')"
+  if [[ -z "$recipient" ]]; then
+    # Fallback: BSD grep doesn't support -P; use sed instead
+    recipient="$(sed -n 's/^.*\(age1[^ ]*\).*/\1/p' "$age_key" 2>/dev/null | head -1)"
+  fi
+  [[ -n "$recipient" ]] || die "Could not determine age recipient from key file. Run: age-keygen"
+  printf '%s' "$recipient"
+}
+
+# encrypt_child_credentials <slug> <client-id> <client-secret> <project-id>
+# Writes children/<slug>/{client-id.age,client-secret.age,project-id}.
+# Plaintext goes to age on stdin and is never written to disk.
+encrypt_child_credentials() {
+  local slug="$1" client_id="$2" client_secret="$3" project_id="$4"
+  local child_dir="$CHILDREN_DIR/$slug"
+  local recipient tmpdir
+  recipient="$(age_recipient)"
+
+  mkdir -p "$CHILDREN_DIR"
+  chmod 700 "$CHILDREN_DIR"
+  tmpdir="$(mktemp -d "$CHILDREN_DIR/cred.XXXXXX")"
+  chmod 700 "$tmpdir"
+
+  if ! printf '%s' "$client_id" | age -e -r "$recipient" -o "$tmpdir/client-id.age" \
+    || ! printf '%s' "$client_secret" | age -e -r "$recipient" -o "$tmpdir/client-secret.age"; then
+    rm -rf "$tmpdir"
+    die "Failed to age-encrypt credentials for '$slug'"
+  fi
+  printf '%s\n' "$project_id" > "$tmpdir/project-id"
+  chmod 600 "$tmpdir"/*
+
+  # Replace the old set only once the new one is complete.
+  rm -rf "$child_dir"
+  mv "$tmpdir" "$child_dir"
+  info "Credentials for '$slug' stored age-encrypted in $child_dir/"
+}
+
+# Fetch the child identity's client ID, create a new client secret, store both.
+store_child_credentials() {
+  local identity_id="$1" slug="$2" token="$3" project_id="$4"
+
   local auth_resp
   auth_resp="$(curl -sf "$INFISICAL_ADDRESS/api/v1/auth/universal-auth/identities/$identity_id" \
     -H "Authorization: Bearer $token")" || \
     die "Failed to get auth config for identity $identity_id."
 
   local client_id
-  client_id="$(echo "$auth_resp" | jq -r '.identityUniversalAuth.clientId')"
+  client_id="$(echo "$auth_resp" | jq -r '.identityUniversalAuth.clientId // empty')"
+  [[ -n "$client_id" ]] || die "No clientId returned for identity $identity_id."
 
-  if [[ -z "$client_id" ]]; then
-    die "No clientId returned for identity $identity_id."
-  fi
-
-  # Create a client secret via POST /client-secrets endpoint
-  local client_secret=""
-  local secret_resp
+  local secret_resp client_secret=""
   secret_resp="$(curl -sf -X POST "$INFISICAL_ADDRESS/api/v1/auth/universal-auth/identities/$identity_id/client-secrets" \
     -H "Authorization: Bearer $token" \
     -H "Content-Type: application/json" \
     -d '{}' 2>/dev/null)" || warn "Could not create client secret (may already exist)."
-
   if [[ -n "$secret_resp" ]]; then
     client_secret="$(echo "$secret_resp" | jq -r '.clientSecret // empty')"
   fi
@@ -204,138 +237,103 @@ store_child_credentials() {
       -d '{"regenerate": true}' 2>/dev/null)" || true
     client_secret="$(echo "$secret_resp" | jq -r '.clientSecret // empty')"
   fi
+  [[ -n "$client_secret" ]] || die "Could not obtain client secret for identity $identity_id."
 
-  if [[ -z "$client_secret" ]]; then
-    die "Could not obtain client secret for identity $identity_id."
-  fi
-
-  # CR fix: Write plaintext creds into a secure mktemp dir, clean up on exit
-  local tmpdir
-  tmpdir="$(mktemp -d -p "$CHILDREN_DIR" "cred.XXXXXX")"
-  chmod 700 "$tmpdir"
-  trap 'rm -rf "$tmpdir"' EXIT INT TERM
-
-  printf '%s' "$client_id" > "$tmpdir/client-id"
-  printf '%s' "$client_secret" > "$tmpdir/client-secret"
-
-  # Derive recipient from key file using age-keygen -y (BSD-compatible)
-  local age_key="${INFISICAL_AGE_KEY_PATH:-$HOME/.config/chezmoi/key.txt}"
-  if [[ ! -f "$age_key" ]]; then
-    die "Age key not found at $age_key. Set INFISICAL_AGE_KEY_PATH."
-  fi
-
-  local recipient
-  recipient="$(age-keygen -y "$age_key" 2>/dev/null | sed 's/#.*//' | tr -d '[:space:]')"
-  if [[ -z "$recipient" ]]; then
-    # Fallback: BSD grep doesn't support -P; use sed instead
-    recipient="$(sed -n 's/^.*\(age1[^ ]*\).*/\1/p' "$age_key" 2>/dev/null | head -1)"
-  fi
-  if [[ -z "$recipient" ]]; then
-    die "Could not determine age recipient from key file. Run: age-keygen"
-  fi
-
-  # Encrypt both files unconditionally, delete plaintext only after both succeed
-  if ! age -e -r "$recipient" -o "$tmpdir/client-id.age" "$tmpdir/client-id" 2>/dev/null; then
-    die "Failed to encrypt client-id"
-  fi
-  if ! age -e -r "$recipient" -o "$tmpdir/client-secret.age" "$tmpdir/client-secret" 2>/dev/null; then
-    die "Failed to encrypt client-secret"
-  fi
-
-  # Move encrypted files to permanent location
-  rm -rf "$child_dir"
-  mv "$tmpdir" "$child_dir"
-  chmod 700 "$child_dir"
-  chmod 600 "$child_dir"/*
-
-  # Remove trap since we moved the dir
-  trap - EXIT INT TERM
-
-  info "Credentials for '$child_name' stored age-encrypted in $child_dir/"
+  encrypt_child_credentials "$slug" "$client_id" "$client_secret" "$project_id"
 }
 
-# Generate a child agent config for a given project.
-generate_child_config() {
-  local child_name="$1" project_slug="$2"
-  local child_dir="$CHILDREN_DIR/$child_name"
+# provision.sh import <slug>: store credentials for an identity made by hand.
+# Prompts without echo; the values are never printed or written in plaintext.
+import_identity() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: $PROG import <slug>"
+  valid_slug "$slug" || die "invalid slug '$slug'"
+  conf_get "$slug" || die "'$slug' is not in $PROJECTS_CONF. Add a line for it first."
+  [[ -t 0 ]] || die "import needs an interactive terminal (it prompts for the credentials)."
 
-  # Determine output filename based on project type
-  local output_file
-  case "$project_slug" in
-    backend)     output_file="backend-secrets.env" ;;
-    godocs)      output_file="r2-creds.env" ;;
-    mcp-servers) output_file="mcp-secrets.env" ;;
-    *)           output_file="${project_slug}-secrets.env" ;;
-  esac
+  local project_id="$CONF_PROJECT_ID"
+  if [[ "$project_id" == "-" ]]; then
+    read -r -p "Infisical project ID (UUID) for '$slug': " project_id
+  fi
+  valid_project_id "$project_id" || die "invalid project ID"
 
-  # CR fix: Use absolute paths, concrete destination, no chezmoi expressions
-  cat > "$INFISICAL_DIR/agent-${project_slug}.yaml" <<EOF
-# Infisical Agent config for the '$project_slug' project.
-# Reader-only — fetches secrets but cannot create or modify anything.
-# Credentials are decrypted at startup by a wrapper script.
+  local client_id client_secret
+  read -r -s -p "Universal Auth client ID: " client_id; echo >&2
+  read -r -s -p "Universal Auth client secret: " client_secret; echo >&2
+  [[ -n "$client_id" && -n "$client_secret" ]] || die "client ID and secret are both required"
 
-infisical:
-  address: "$INFISICAL_ADDRESS"
-  exit-after-auth: false
-  revoke-credentials-on-shutdown: false
-  retry-strategy:
-    max-retries: 5
-    max-delay: "10s"
-    base-delay: "500ms"
+  encrypt_child_credentials "$slug" "$client_id" "$client_secret" "$project_id"
+}
 
-auth:
-  type: "universal-auth"
-  config:
-    client-id: "$child_dir/client-id.age"
-    client-secret: "$child_dir/client-secret.age"
-
-templates:
-  - source-path: "$INFISICAL_DIR/templates/${project_slug}-secrets.tpl"
-    destination-path: "\$HOME/.infisical/${output_file}"
-    config:
-      polling-interval: "5m"
-EOF
+install_agents() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    "$INFISICAL_DIR/install-launchagents.sh"
+  else
+    info "Not macOS: start an agent with $INFISICAL_DIR/agent-run.sh <slug>"
+  fi
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────────────────────────
 
-main() {
+provision() {
   info "Infisical provisioner bootstrap"
   info "Address: $INFISICAL_ADDRESS"
+  [[ -n "$ORG_ID" ]] || die "INFISICAL_ORG_ID is required. Get it from your Infisical org settings."
   info "Org ID: $ORG_ID"
 
-  if [[ -z "$ORG_ID" ]]; then
-    die "INFISICAL_ORG_ID is required. Set it and re-run."
+  local slugs=("$@")
+  if [[ ${#slugs[@]} -eq 0 ]]; then
+    local all
+    all="$(conf_slugs)" || exit 1
+    # shellcheck disable=SC2206  # slugs are validated, no spaces
+    slugs=($all)
   fi
 
   local token
   token="$(provisioner_token)"
 
-  for project_spec in "${PROJECTS[@]}"; do
-    IFS=':' read -r slug envs_csv <<< "$project_spec"
-    info "Processing project: $slug (environments: $envs_csv)"
+  local slug project_id child_id
+  for slug in "${slugs[@]}"; do
+    valid_slug "$slug" || die "invalid slug '$slug'"
+    conf_get "$slug" || die "'$slug' is not in $PROJECTS_CONF. Add a line for it first."
+    info "Processing project: $slug (environments: $CONF_ENVS, rendering $CONF_RENDER_ENV)"
 
-    local project_id
-    project_id="$(ensure_project "$slug" "$token")"
+    if [[ "$CONF_PROJECT_ID" != "-" ]]; then
+      project_id="$CONF_PROJECT_ID"
+    else
+      project_id="$(ensure_project "$slug" "$token")"
+    fi
+    valid_project_id "$project_id" || die "bad project ID for '$slug'"
 
-    ensure_environments "$project_id" "$envs_csv" "$token"
-
-    local child_id
+    ensure_environments "$project_id" "$CONF_ENVS" "$token"
     child_id="$(ensure_child_identity "$project_id" "$slug-agent" "$token")"
-
-    store_child_credentials "$child_id" "$slug" "$token"
-
-    generate_child_config "$slug" "$slug"
+    store_child_credentials "$child_id" "$slug" "$token" "$project_id"
   done
 
   info ""
   info "Provisioning complete."
-  info "Next steps:"
-  info "  1. Copy .infisical/agent-<project>.yaml → ~/.config/infisical/agent-<project>.yaml"
-  info "  2. Start each agent: infisical agent --config ~/.config/infisical/agent-<project>.yaml"
-  info "  3. Verify rendered files: ls ~/.infisical/*-secrets.env"
+}
+
+main() {
+  case "${1:-}" in
+    import)
+      shift
+      import_identity "$@"
+      ;;
+    -h | --help)
+      sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *)
+      provision "$@"
+      ;;
+  esac
+
+  install_agents
+  info "Check a rendered file by key name only:"
+  info "  grep -oE '^(export )?[A-Za-z_][A-Za-z0-9_]*=' ~/.infisical/<slug>-secrets.env"
 }
 
 main "$@"
