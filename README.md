@@ -12,7 +12,7 @@ Cross-platform environment as code. One command bootstraps a fully configured de
 Layer 1: Tailscale         mesh network — connects all machines
 Layer 2: chezmoi/dotfiles  identity — makes any machine "yours"  ← this repo
 Layer 3: Containers        workloads — Weaviate, transparency engine
-Layer 4: Backups           durability — R2, GHCR, Doppler
+Layer 4: Backups           durability — R2, GHCR, Infisical
 ```
 
 This repo owns **Layer 2**. For container stacks and infrastructure, see [hole-devenv](https://github.com/Jobikinobi/hole-devenv).
@@ -29,7 +29,7 @@ This repo owns **Layer 2**. For container stacks and infrastructure, see [hole-d
 | Editor configs (helix, kitty, btop, htop) | Yes | Yes | `dot_config/` |
 | Node LTS + Claude Code | Yes | Yes | `run_once_after_install-brewfile.sh.tmpl` |
 | Tailscale auto-join | — | Yes | `run_once_before_install-toolchains.sh.tmpl` |
-| Secrets via Doppler (baked at apply time) | Yes | Optional | `dot_zshrc.tmpl` |
+| Secrets via the Infisical agent (rendered `~/.infisical/*.env`) | Yes | Optional | `.infisical/`, `dot_zshrc.tmpl` |
 | Docker image (GHCR) | — | Pre-built | `Dockerfile.test` |
 
 ---
@@ -172,7 +172,7 @@ Installed via `dot_Brewfile.core` on Linux, included in the full `dot_Brewfile` 
 | `ripgrep` | `grep` | Fast content search |
 | `uv` | `pip` | Python package manager |
 | `direnv` | — | Per-directory env vars |
-| `doppler` | `.env` files | Secrets management |
+| `infisical` | `.env` files | Secrets management (`doppler` stays installed as a legacy fallback) |
 | `fnm` | `nvm` | Node version manager |
 | `powerlevel10k` | — | zsh prompt theme |
 
@@ -196,16 +196,23 @@ Docker containers join the tailnet automatically when launched with `TS_AUTHKEY`
 
 ## Secrets Management
 
-All secrets live in **Doppler** — never hardcoded, never in `.env` files.
+Secrets live in **Infisical Cloud**. They are never hardcoded and never kept in `.env` files.
+Doppler is legacy. It stays installed as a fallback while projects migrate, and it fails
+over SSH because its login is kept in the macOS keychain.
 
-chezmoi templates call Doppler at `chezmoi apply` time and bake values into the generated files:
-```
-# In dot_zshrc.tmpl (what git sees):
-export API_KEY='{{ output "doppler" "secrets" "get" "API_KEY" "--plain" ... | trim }}'
+- **Shells, services and SSH sessions** read files that the **Infisical agent** renders. The agent
+  runs as a launchd daemon and signs in with a reader-only machine identity. There is one identity
+  per project, created by [`.infisical/provision.sh`](.infisical/provision.sh). The agent writes
+  `~/.infisical/*.env` files with mode 600; `provision.sh` sets their names. `dot_zshrc.tmpl`
+  only sources `~/.infisical/backend-secrets.env` when it exists, so shell start needs no keychain
+  and no network call. (Some `run_once_*` scripts still fetch a secret during `chezmoi apply`:
+  the rendered file first, then `infisical run`, then legacy Doppler.)
+- **Interactive use**, on a machine where you're logged in:
+  `infisical run --projectId <id> --env <env> -- <command>`. This needs `infisical login`, which
+  uses the keychain, so it doesn't work over SSH.
 
-# In ~/.zshrc (what the shell sees):
-export API_KEY='actual-value-from-doppler'
-```
+Rendered files are secrets. Never commit, copy or print them, and check secrets by name only.
+[`.infisical/README.md`](.infisical/README.md) covers the architecture and provisioning steps.
 
 ---
 

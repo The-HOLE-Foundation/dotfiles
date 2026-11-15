@@ -19,8 +19,8 @@ This is the 10-step checklist for adding a new chezmoi profile. The Paperclip "A
    Leave it empty if the project has no extra brews — file presence is the signal.
 3. Create `run_once_after_install-project-<key>.sh.tmpl`. Start with the guard:
    `{{- if not (has "<key>" .projects) }}exit 0{{ end }}`
-   Add any toolchain pins, language-runtime installs, or doppler-login hints.
-4. Create `docs/profiles/<key>.md`: what's installed, what's manual, Doppler scope, repo URL.
+   Add any toolchain pins, language-runtime installs, or notes on which `~/.infisical/*.env` file the project reads.
+4. Create `docs/profiles/<key>.md`: what's installed, what's manual, secrets source (the Infisical project, or the legacy Doppler scope if it hasn't migrated), repo URL.
 5. Add a row for the new profile to `docs/profiles/README.md`.
 6. Run `scripts/test-profile.sh <key>` locally — builds the Linux Docker image with `CHEZMOI_PROJECT=<key>` baked in, verifies key binaries are on PATH.
 7. Open a PR titled `profile(<key>): add` with the `profile` label. CI runs the test-profile matrix.
@@ -173,7 +173,7 @@ scripts/test-profile.sh --project legal --branch my-feature-branch
 
 Exit codes: `0` on success, non-zero on any missing binary or any docs-only extra. Failures print the offending profile + binary so the cause is obvious in CI logs.
 
-Run requirements: a reachable Docker daemon (`docker info` succeeds). No Tailscale, Doppler, or external network access beyond Docker Hub / GHCR is required — profile verification is binary-presence only, not a full functional smoke. Build cache is reused across profile keys (no `--no-cache` by default) so reruns are fast.
+Run requirements: a reachable Docker daemon (`docker info` succeeds). No Tailscale, secrets manager, or external network access beyond Docker Hub / GHCR is required — profile verification is binary-presence only, not a full functional smoke. Build cache is reused across profile keys (no `--no-cache` by default) so reruns are fast.
 
 ## Provisioning a container
 
@@ -181,10 +181,10 @@ Once a profile exists, stand up a per-project LXD container on the canonical Pro
 
 ```bash
 # inspect first — prints the rendered cloud-init + proposed remote command,
-# never touches Doppler or the Proxmox host
+# never fetches a secret or touches the Proxmox host
 scripts/provision-lxd.sh --project legal --name the-legal-01 --dry-run
 
-# launch for real (requires doppler login + tailnet reachability)
+# launch for real (requires a Tailscale auth key from Infisical, or legacy Doppler, + tailnet reachability)
 scripts/provision-lxd.sh --project legal --name the-legal-01
 
 # launch with Nix profile activation (seeds nix_profile in the pre-seeded chezmoi.toml)
@@ -196,7 +196,7 @@ The script:
 
 - validates `<key>` against `dot_Brewfile.<key>` so typos fail fast,
 - validates `--nix-profile` against known flake outputs (`joe`, `agent`) when supplied,
-- fetches a **single-use, ephemeral** Tailscale auth key from Doppler scope `dotfiles/lxd-bootstrap` (secret `TAILSCALE_AUTHKEY`),
+- fetches a **single-use, ephemeral** Tailscale auth key (`TAILSCALE_AUTHKEY`), trying in order: the Infisical agent file `~/.infisical/tailscale-authkey.txt` (override with `$INFISICAL_AUTHKEY_FILE`), then `infisical run` against the `backend` project (`dev`), then the legacy Doppler scope `dotfiles/lxd-bootstrap`,
 - renders a cloud-init that pre-seeds `~/.config/chezmoi/chezmoi.toml` with `projects = ["<key>"]` + `lxd_profile = "<key>"` + `nix_profile = "<profile>"` and runs `chezmoi init --apply jobikinobi`,
 - SSHes to the Proxmox host (default `proxmox.lemming-likert.ts.net`; override with `--host` or `$LXD_PROXMOX_HOST`) and runs `lxc init` / `lxc config set user.user-data` / `lxc start` — the user-data is streamed over stdin so the auth key never lands in remote `ps` output.
 
